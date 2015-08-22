@@ -171,6 +171,10 @@ class cPDFDocument:
         self.ungetted = []
         self.position = -1
 
+    def getoffset(self):
+        #print("cPDFDocument self.position %d" % self.position);
+        return self.position
+
     def byte(self):
         if len(self.ungetted) != 0:
             self.position += 1
@@ -200,7 +204,12 @@ class cPDFTokenizer:
     def __init__(self, file):
         self.oPDF = cPDFDocument(file)
         self.ungetted = []
-
+        self.offset = 0
+        self.flag = 0
+    def getoffset(self):
+        self.offset = self.oPDF.getoffset()
+        #print("cPDFTokenizer self.offset %d" % self.offset);
+        return self.offset
     def Token(self):
         if len(self.ungetted) != 0:
             return self.ungetted.pop()
@@ -282,7 +291,10 @@ class cPDFParser:
         self.oPDFTokenizer = cPDFTokenizer(file)
         self.verbose = verbose
         self.extract = extract
-
+        self.offset = 0
+    def getoffset(self):
+        #print("cPDFParser self.offset %d" % self.offset);
+        return self.offset
     def GetObject(self):
         while True:
             if self.context == CONTEXT_OBJ:
@@ -293,6 +305,7 @@ class cPDFParser:
                 if self.token[0] == CHAR_DELIMITER:
                     if self.token[1][0] == '%':
                         if self.context == CONTEXT_OBJ:
+                            #print("CONTEXT_OBJ self.offset %d" % self.offset);
                             self.content.append(self.token)
                         else:
                             return cPDFElementComment(self.token[1])
@@ -354,6 +367,8 @@ class cPDFParser:
                                     self.objectId = eval(self.token[1])
                                     self.objectVersion = eval(self.token2[1])
                                     self.context = CONTEXT_OBJ
+                                    self.offset = self.oPDFTokenizer.getoffset()
+                                    #print("CONTEXT_OBJ %d" % self.offset)
                                 else:
                                     self.oPDFTokenizer.unget(self.token3)
                                     self.oPDFTokenizer.unget(self.token2)
@@ -428,6 +443,7 @@ class cPDFElementIndirectObject:
         self.id = id
         self.version = version
         self.content = content
+        self.offset = 0
         #fix stream for Ghostscript bug reported by Kurt
         if self.ContainsStream():
             position = len(self.content) - 1
@@ -462,7 +478,7 @@ class cPDFElementIndirectObject:
         references = []
         for i in range(0, len(content)):
             if i > 1 and content[i][0] == CHAR_REGULAR and content[i][1] == 'R' and content[i-2][0] == CHAR_REGULAR and IsNumeric(content[i-2][1]) and content[i-1][0] == CHAR_REGULAR and IsNumeric(content[i-1][1]):
-                references.append((content[i-2][1], content[i-1][1], content[i][1]))
+                references.append(content[i-2][1])
         return references
 
     def References(self, index):
@@ -694,12 +710,14 @@ class cPDFParseDictionary:
     def Retrieve(self):
         return self.parsed
 
-    def PrettyPrintSub(self, prefix, dictionary):
+    def PrettyPrintSub(self, prefix, dictionary, off):
         if dictionary != None:
-            print('%s<<' % prefix)
+            #print('%s<<' % prefix)
+            off1 = 0;
+            off1 += off
             for e in dictionary:
                 if e[1] == []:
-                    print('%s  %s' % (prefix, e[0]))
+                    print('%s %s' % (prefix, e[0]))
                 elif type(e[1][0]) == type(''):
                     if len(e[1]) == 3 and IsNumeric(e[1][0]) and e[1][1] == '0' and e[1][2] == 'R':
                         joiner = ' '
@@ -709,14 +727,20 @@ class cPDFParseDictionary:
                     reprValue = repr(value)
                     if "'" + value + "'" != reprValue:
                         value = reprValue
-                    print('%s  %s %s' % (prefix, e[0], value))
+                    if e[0] == '/BaseFont' or e[0] == '/FontName':
+                        off1 += prefix.find(value)
+                        off1 += 1
+                        print('%d' % off1)
+                        print('%s' % value)
+                    #elif e[0] == '/FontFile3':
+                        #print('/FontFile3 %s' % value)
                 else:
-                    print('%s  %s' % (prefix, e[0]))
-                    self.PrettyPrintSub(prefix + '    ', e[1])
-            print('%s>>' % prefix)
+                    #print('%s %s' % (prefix, e[0]))
+                    self.PrettyPrintSub(prefix, e[1], off1)
+            #print('%s>>' % prefix)
 
-    def PrettyPrint(self, prefix):
-        self.PrettyPrintSub(prefix, self.parsed)
+    def PrettyPrint(self, prefix, off = 0):
+        self.PrettyPrintSub(prefix, self.parsed, off)
 
     def Get(self, select):
         for key, value in self.parsed:
@@ -751,7 +775,7 @@ def IfWIN32SetBinary(io):
         import msvcrt
         msvcrt.setmode(io.fileno(), os.O_BINARY)
 
-def PrintOutputObject(object, options):
+def PrintOutputObject(object, options, offset):
     if options.dump == '-':
         filtered = object.Stream(options.filter == True)
         if filtered == []:
@@ -759,17 +783,43 @@ def PrintOutputObject(object, options):
         IfWIN32SetBinary(sys.stdout)
         StdoutWriteChunked(filtered)
         return
+#
+#output format:
+#			|objid
+#			|type
+#			|offset
+#			|nref ref1 ref2 ...
+#			|[offset of Fontname]
+#			|[Fontname]
+#		type:
+#			0 : if ref == 0, maybe length of stream
+#			1 : FontDescriptor, contains FontFile3
+#			2 : Font
+#
 
-    print('obj %d %d' % (object.id, object.version))
-    print(' Type: %s' % ConditionalCanonicalize(object.GetType(), options.nocanonicalizedoutput))
-    print(' Referencing: %s' % ', '.join(map(lambda x: '%s %s %s' % x, object.GetReferences())))
+    print('%d' % (object.id))
+    #print('Type:%s' % ConditionalCanonicalize(object.GetType(), options.nocanonicalizedoutput))
+    references = object.GetReferences()
+    xlen = len(references)
+    type = 0;
+    if object.GetType() == '/FontDescriptor':
+        type = 1
+    elif object.GetType() == '/Font':
+        type = 2
+    
+    if xlen == 0:
+        type = 0
+    print('%d' % type)
+    print('%d' % offset)
+
+    print('%d %s' % (xlen,' '.join(map(lambda x: '%s' % x, object.GetReferences()))))
     dataPrecedingStream = object.ContainsStream()
     oPDFParseDictionary = None
     if dataPrecedingStream:
-        print(' Contains stream')
         if options.debug:
             print(' %s' % FormatOutput(dataPrecedingStream, options.raw))
         oPDFParseDictionary = cPDFParseDictionary(dataPrecedingStream, options.nocanonicalizedoutput)
+        oPDFParseDictionary.PrettyPrint(object.content, offset)
         if options.hash:
             streamContent = object.Stream(False)
             print('  unfiltered')
@@ -781,11 +831,12 @@ def PrintOutputObject(object, options):
             print('   %s' % HexAsciiDumpLine(streamContent))
             streamContent = None
     else:
-        if options.debug or options.raw:
-            print(' %s' % FormatOutput(object.content, options.raw))
+        #if options.debug or options.raw:
+        #if xlen == 0:
+            #print('%s' % FormatOutput(object.content, 1))
+        str = FormatOutput(object.content, 1)
         oPDFParseDictionary = cPDFParseDictionary(object.content, options.nocanonicalizedoutput)
-    print('')
-    oPDFParseDictionary.PrettyPrint('  ')
+        oPDFParseDictionary.PrettyPrint(str, offset)
     print('')
     if options.filter and not options.dump:
         filtered = object.Stream()
@@ -799,7 +850,7 @@ def PrintOutputObject(object, options):
             if stream != []:
                 print(' %s' % FormatOutput(stream, options.raw))
         else:
-            print(''.join([token[1] for token in object.content]))
+            print('x'.join([token[1] for token in object.content]))
 
 
     if options.dump:
@@ -815,7 +866,6 @@ def PrintOutputObject(object, options):
             fDump.close()
         except:
             print('Error writing file %s' % options.dump)
-    print('')
     return
 
 def Canonicalize(sIn):
@@ -1005,11 +1055,11 @@ def PrintGenerateObject(object, options, newId=None):
     else:
         print('    oPDF.indirectobject(%d, %d, %s)' % (objectId, object.version, repr(FormatOutput(object.content, True).strip())))
 
-def PrintObject(object, options):
+def PrintObject(object, options, offset=0):
     if options.generate:
         PrintGenerateObject(object, options)
     else:
-        PrintOutputObject(object, options)
+        PrintOutputObject(object, options, offset)
 
 def File2Strings(filename):
     try:
@@ -1297,16 +1347,16 @@ def Main():
                                 print("    oPDF.header('%s')" % comment[4:])
                             elif comment != '%EOF':
                                 print('    oPDF.comment(%s)' % repr(comment))
-                        elif options.yara == None and options.generateembedded == 0:
-                            print('PDF Comment %s' % FormatOutput(object.comment, options.raw))
-                            print('')
+                        #elif options.yara == None and options.generateembedded == 0:
+                            #print('PDF Comment %s' % FormatOutput(object.comment, options.raw))
+                            #print('')
                     elif object.type == PDF_ELEMENT_XREF and selectXref:
                         if not options.generate and options.yara == None and options.generateembedded == 0:
                             if options.debug:
                                 print('xref %s' % FormatOutput(object.content, options.raw))
-                            else:
-                                print('xref')
-                            print('')
+                            #else:
+                                #print('xref')
+                            #print('')
                     elif object.type == PDF_ELEMENT_TRAILER and selectTrailer:
                         oPDFParseDictionary = cPDFParseDictionary(object.content[1:], options.nocanonicalizedoutput)
                         if options.generate:
@@ -1317,14 +1367,14 @@ def Main():
                             if not options.search or options.search and object.Contains(options.search):
                                 if oPDFParseDictionary == None:
                                     print('trailer %s' % FormatOutput(object.content, options.raw))
-                                else:
-                                    print('trailer')
-                                    oPDFParseDictionary.PrettyPrint('  ')
-                                print('')
-                    elif object.type == PDF_ELEMENT_STARTXREF and selectStartXref:
-                        if not options.generate and options.yara == None and options.generateembedded == 0:
-                            print('startxref %d' % object.index)
-                            print('')
+                                #else:
+                                    #print('trailer')
+                                    #oPDFParseDictionary.PrettyPrint('  ')
+                                #print('')
+                    #elif object.type == PDF_ELEMENT_STARTXREF and selectStartXref:
+                        #if not options.generate and options.yara == None and options.generateembedded == 0:
+                            #print('startxref %d' % object.index)
+                            #print('')
                     elif object.type == PDF_ELEMENT_INDIRECT_OBJECT and selectIndirectObject:
                         if options.search:
                             if object.Contains(options.search):
@@ -1362,7 +1412,8 @@ def Main():
                             if object.id == options.generateembedded:
                                 PrintGenerateObject(object, options, 8)
                         else:
-                            PrintObject(object, options)
+                            #print("PrintObject %d" % oPDFParser.getoffset())
+                            PrintObject(object, options, oPDFParser.getoffset())
                     elif object.type == PDF_ELEMENT_MALFORMED:
                         try:
                             fExtract = open(options.extract, 'wb')
@@ -1374,8 +1425,8 @@ def Main():
                         except:
                             print('Error writing file %s' % options.extract)
             else:
+                print("0")
                 break
-
         if options.stats:
             print('Comment: %s' % cntComment)
             print('XREF: %s' % cntXref)
