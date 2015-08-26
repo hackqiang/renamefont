@@ -443,7 +443,8 @@ class cPDFElementIndirectObject:
         self.id = id
         self.version = version
         self.content = content
-        self.offset = 0
+        #invoke Stream firstly
+        self.stream_start = 0
         #fix stream for Ghostscript bug reported by Kurt
         if self.ContainsStream():
             position = len(self.content) - 1
@@ -460,6 +461,8 @@ class cPDFElementIndirectObject:
             if not self.content[position][1].endswith('endstream'):
                 return
             self.content = self.content[0:position] + [(self.content[position][0], self.content[position][1][:-len('endstream')])] + [(self.content[position][0], 'endstream')] + self.content[position+1:]
+    def GetStreamStart(self):
+        return self.stream_start
 
     def GetType(self):
         content = CopyWithoutWhiteSpace(self.content)
@@ -488,7 +491,9 @@ class cPDFElementIndirectObject:
         return False
 
     def ContainsStream(self):
+        self.stream_start = 1
         for i in range(0, len(self.content)):
+            self.stream_start += len(self.content[i][1])
             if self.content[i][0] == CHAR_REGULAR and self.content[i][1] == 'stream':
                 return self.content[0:i]
         return False
@@ -710,7 +715,7 @@ class cPDFParseDictionary:
     def Retrieve(self):
         return self.parsed
 
-    def PrettyPrintSub(self, prefix, dictionary, off):
+    def PrettyPrintSub(self, prefix, dictionary, off, otype):
         if dictionary != None:
             #print('%s<<' % prefix)
             off1 = 0;
@@ -732,15 +737,27 @@ class cPDFParseDictionary:
                         off1 += 1
                         print('%d' % off1)
                         print('%s' % value)
+                    elif e[0] == '/Length':
+                        if value == '0':
+                            print("0")
+                        else:
+                            data = '';
+                            i=0
+                            while value[i] != ' ':
+                                data+=value[i]
+                                i+=1
+                            print('%s' % data)
+                    elif e[0] == '/Filter':
+                        print('%s' % value)
                     #elif e[0] == '/FontFile3':
                         #print('/FontFile3 %s' % value)
                 else:
                     #print('%s %s' % (prefix, e[0]))
-                    self.PrettyPrintSub(prefix, e[1], off1)
+                    self.PrettyPrintSub(prefix, e[1], off1, otype)
             #print('%s>>' % prefix)
 
-    def PrettyPrint(self, prefix, off = 0):
-        self.PrettyPrintSub(prefix, self.parsed, off)
+    def PrettyPrint(self, prefix, off = 0, type=0):
+        self.PrettyPrintSub(prefix, self.parsed, off, type)
 
     def Get(self, select):
         for key, value in self.parsed:
@@ -785,58 +802,91 @@ def PrintOutputObject(object, options, offset):
         return
 #
 #output format:
-#			|objid
-#			|type
-#			|offset
-#			|nref ref1 ref2 ...
-#			|[offset of Fontname]
-#			|[Fontname]
-#		type:
-#			0 : if ref == 0, maybe length of stream
-#			1 : FontDescriptor, contains FontFile3
-#			2 : Font
-#
+
+#       type        0                         1(FontDescriptor)/2(Font)                 3(stream)
+#                   objid
+#                   offset
+#			        type
+#			        refs ref1 ref2 ...
+#			        length                    offset of fontname                        /Length Ref if == 0, no length
+#			        length_start length_end   fontname                                  /Filter
+#                                                                                       stream_start stream_end
+    #don't care /Type/Pages/Kids
+    if object.id == 1:
+        return
+
+    if object.GetType() == '/ExtGState' or object.GetType() == '/Page' or object.GetType() == '/Catalog':
+        return
+
+    if FormatOutput(object.content, 1).find("/ProcSet")>=0:
+        return
+    if FormatOutput(object.content, 1).find("/Author")>=0:
+        return
 
     print('%d' % (object.id))
-    #print('Type:%s' % ConditionalCanonicalize(object.GetType(), options.nocanonicalizedoutput))
+    #print('%d Type:%s' % (object.type, ConditionalCanonicalize(object.GetType(), options.nocanonicalizedoutput)))
+
     references = object.GetReferences()
-    xlen = len(references)
+    dataPrecedingStream = object.ContainsStream()
+    oPDFParseDictionary = None
+
     type = 0;
     if object.GetType() == '/FontDescriptor':
         type = 1
     elif object.GetType() == '/Font':
         type = 2
-    
-    if xlen == 0:
-        type = 0
-    print('%d' % type)
-    print('%d' % offset)
+    elif dataPrecedingStream:
+        type = 3
 
-    print('%d %s' % (xlen,' '.join(map(lambda x: '%s' % x, object.GetReferences()))))
-    dataPrecedingStream = object.ContainsStream()
-    oPDFParseDictionary = None
+    print('%d' % offset)
+    print('%d' % type)
+
+    print('%d %s' % (len(references),' '.join(map(lambda x: '%s' % x, object.GetReferences()))))
+
+
     if dataPrecedingStream:
-        if options.debug:
-            print(' %s' % FormatOutput(dataPrecedingStream, options.raw))
-        oPDFParseDictionary = cPDFParseDictionary(dataPrecedingStream, options.nocanonicalizedoutput)
-        oPDFParseDictionary.PrettyPrint(object.content, offset)
-        if options.hash:
-            streamContent = object.Stream(False)
-            print('  unfiltered')
-            print('   len: %6d md5: %s' % (len(streamContent), hashlib.md5(streamContent).hexdigest()))
-            print('   %s' % HexAsciiDumpLine(streamContent))
-            streamContent = object.Stream(True)
-            print('  filtered')
-            print('   len: %6d md5: %s' % (len(streamContent), hashlib.md5(streamContent).hexdigest()))
-            print('   %s' % HexAsciiDumpLine(streamContent))
-            streamContent = None
+        #print("contain stream")
+        if len(references) == 0:
+            #in case some length == 0
+            print("0");
+            print("[/XXXXX]")
+            print("0 0")
+        else:
+            #if options.debug:
+            if 0:
+                print(' %s' % FormatOutput(dataPrecedingStream, 1))
+            oPDFParseDictionary = cPDFParseDictionary(dataPrecedingStream, 1)
+            oPDFParseDictionary.PrettyPrint(object.content, offset, type)
+            #if options.hash:
+            if 1:
+                streamContent = object.Stream(False)
+                #print('  unfiltered')
+                #print('   len: %6d md5: %s' % (len(streamContent), hashlib.md5(streamContent).hexdigest()))
+                #print('   %s' % HexAsciiDump(streamContent))
+                print("%d %d" % (offset+object.GetStreamStart(), offset+object.GetStreamStart()+len(streamContent)))
+                #streamContent = object.Stream(True)
+                #print('  filtered')
+                #print('   len: %6d md5: %s' % (len(streamContent), hashlib.md5(streamContent).hexdigest()))
+                #print('   %s' % HexAsciiDump(streamContent))
+                streamContent = None
     else:
-        #if options.debug or options.raw:
-        #if xlen == 0:
-            #print('%s' % FormatOutput(object.content, 1))
         str = FormatOutput(object.content, 1)
+        #if options.debug or options.raw:
+        if len(references) == 0:
+            #the length of stream
+            # 0A 20 X X X 0A
+            #print('%s' % FormatOutput(object.content, 1))
+            stream_length = ''
+            i=2
+            while str[i].isdigit() and i<len(str):
+                stream_length += str[i]
+                i +=1;
+            start_off = offset+3
+            end_off = start_off+len(stream_length)-1
+            print("%s" % stream_length)
+            print("%d %d" % (start_off, end_off))
         oPDFParseDictionary = cPDFParseDictionary(object.content, options.nocanonicalizedoutput)
-        oPDFParseDictionary.PrettyPrint(str, offset)
+        oPDFParseDictionary.PrettyPrint(str, offset, type)
     print('')
     if options.filter and not options.dump:
         filtered = object.Stream()
