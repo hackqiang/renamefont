@@ -734,9 +734,10 @@ class cPDFParseDictionary:
                         value = reprValue
                     if e[0] == '/BaseFont' or e[0] == '/FontName':
                         off1 += prefix.find(value)
-                        off1 += 1
+                        off1 += 2
+                        lens = len(value)
                         print('%d' % off1)
-                        print('%s' % value)
+                        print('%s' % value[1:lens])
                     elif e[0] == '/Length':
                         if value == '0':
                             print("0")
@@ -863,7 +864,7 @@ def PrintOutputObject(object, options, offset):
                 #print('  unfiltered')
                 #print('   len: %6d md5: %s' % (len(streamContent), hashlib.md5(streamContent).hexdigest()))
                 #print('   %s' % HexAsciiDump(streamContent))
-                print("%d %d" % (offset+object.GetStreamStart(), offset+object.GetStreamStart()+len(streamContent)))
+                print("%d %d" % (offset+object.GetStreamStart()+1, offset+object.GetStreamStart()+len(streamContent)))
                 #streamContent = object.Stream(True)
                 #print('  filtered')
                 #print('   len: %6d md5: %s' % (len(streamContent), hashlib.md5(streamContent).hexdigest()))
@@ -882,7 +883,7 @@ def PrintOutputObject(object, options, offset):
                 stream_length += str[i]
                 i +=1;
             start_off = offset+3
-            end_off = start_off+len(stream_length)-1
+            end_off = start_off+len(stream_length)
             print("%s" % stream_length)
             print("%d %d" % (start_off, end_off))
         oPDFParseDictionary = cPDFParseDictionary(object.content, options.nocanonicalizedoutput)
