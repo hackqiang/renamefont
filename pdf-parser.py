@@ -750,8 +750,9 @@ class cPDFParseDictionary:
                             print('%s' % data)
                     elif e[0] == '/Filter':
                         print('%s' % value)
-                    #elif e[0] == '/FontFile3':
-                        #print('/FontFile3 %s' % value)
+                    elif e[0] == '/Subtype':
+                        if value == '/CIDFontType0C':
+                            print("CIDFontType0C")
                 else:
                     #print('%s %s' % (prefix, e[0]))
                     self.PrettyPrintSub(prefix, e[1], off1, otype)

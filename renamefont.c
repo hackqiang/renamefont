@@ -5,13 +5,19 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_FONTNAME_LONG 64
+#include <zlib.h>
+
+#define MAX_FONTNAME_LONG 128
 #define MAX_OBJS 200000
 
+#define DEBUG_DUMP
 
-#define INFO0(fmt, args...)
+#define ERROR(fmt, args...) printf(fmt, ##args)
+#define INFO0(fmt, args...) 
 #define INFO1(fmt, args...)
-#define INFO2(fmt, args...) printf(fmt, ##args)
+#define INFO2(fmt, args...)
+#define INFO3(fmt, args...) printf(fmt, ##args)
+
 
 struct obj_info {
 	int type;
@@ -27,7 +33,9 @@ struct obj_info {
 	char name_ori[MAX_FONTNAME_LONG];
 	char name_new[MAX_FONTNAME_LONG];
 	int compress_type;
+	int CIDFontType0C;
 };
+
 
 int mycmp(const void *a, const void *b)
 {
@@ -143,13 +151,24 @@ int init_objects(struct obj_info *objs)
 			}
 			else
 			{
-				scanf("%d", &ref); //ref should be same with (objs+obj)->ref[0]
+				scanf("%d\n", &ref); //ref should be same with (objs+obj)->ref[0]
 				gets(buff);
-				scanf("%lld %lld\n", &(objs+obj)->start, &(objs+obj)->end);
 				if(strstr(buff, "FlateDecode"))
 				{
 					(objs+obj)->compress_type = 1;
 				}
+				memset(buff, 0, MAX_FONTNAME_LONG);
+				gets(buff);
+				if(!memcmp(buff, "CIDFontType0C", strlen("CIDFontType0C")))
+				{
+					(objs+obj)->CIDFontType0C = 1;
+					scanf("%lld %lld\n", &(objs+obj)->start, &(objs+obj)->end);
+				}
+				else
+				{
+					sscanf(buff,"%lld %lld\n", &(objs+obj)->start, &(objs+obj)->end);
+				}
+
 			}
 		}
 		else
@@ -163,6 +182,8 @@ int init_objects(struct obj_info *objs)
 	return maxobj;
 }
 
+//1. UID
+//2. fontname for type3
 int update_objects(struct obj_info *objs, int maxobj)
 {
 	//UID
@@ -206,89 +227,196 @@ int update_objects(struct obj_info *objs, int maxobj)
 		}
 	}
 	
-	
-	qsort(objs, maxobj+1, sizeof(struct obj_info), mycmp);
-
-	i=0;
-	while((objs+i++)->obj);
-	i--;
-	
-	//debug
-	INFO2("total %d\n", i);
-	for(j=0;j<i;j++)
-		INFO2("O%d T%d (%lld\t%lld) U%d RD%d F%lld\n",(objs+j)->obj, (objs+j)->type, (objs+j)->start, (objs+j)->end, (objs+j)->uid, (objs+j)->refed, (objs+j)->offset);
-	
-	return i;
+	return 0;
 }
 
-int uncompress(char *origin, char *new)
+//memory maybe contain '\0'
+int replace_string(char *sSrc, char *sMatchStr, char *sReplaceStr, int *length, int flag)
 {
-	int new_len = 0;
-	return new_len;
+        int  StringLen;
+        
+		
+		char *caNewString = malloc(*length);
+		if(!caNewString)
+		{
+			return -1;
+		}
+		memset(caNewString, 0, *length);
+		
+		int k,j,i = 0;
+		int len = 0;
+        while(i < *length)
+        {
+                if(sSrc[i] == sMatchStr[0])
+				{
+					j = i+1;
+					k=1;
+					while(sSrc[j] == sMatchStr[k] && k<strlen(sMatchStr))
+					{
+						j++;
+						k++;
+					}
+					if(k==strlen(sMatchStr) && flag)
+					{
+						flag--;
+						i+=strlen(sMatchStr);
+						memcpy(caNewString+len, sReplaceStr, strlen(sReplaceStr));
+						len+=strlen(sReplaceStr);
+						continue;
+					}
+				}
+                caNewString[len++] = sSrc[i];
+				i++;
+        }
+		
+		memset(sSrc,0, *length);
+		*length = len;
+		memcpy(sSrc, caNewString, *length);
+		free(caNewString);
+        return 0;
 }
 
-int compress(char *origin, char *new)
+int update_stream(struct obj_info *obj, char *ori_stream, unsigned long *ml)
 {
-	int new_len = 0;
-	return new_len;
+	if(obj->name_ori[0] == 0)
+	{
+		printf("O%d return\n", obj->obj);
+		return 0;
+	}
+	
+	int ret;
+	off_t off;
+	unsigned long new_length = *ml*10;
+	
+	char *new_stream = (char *)malloc(new_length);
+	if(!new_stream)
+	{
+		ERROR("malloc failed %d\n", new_length);
+		return -1;
+	}
+	memset(new_stream, 0, new_length);
+	
+#ifdef DEBUG_DUMP
+	char filename1[128] = {0};
+	sprintf(filename1, "stream/%d-%d-%d-%s-origin", obj->obj, *ml, obj->start, obj->name_ori[0]?obj->name_ori:"null");
+	int out1 = open(filename1, O_RDWR | O_CREAT);
+	if(out1<0)
+	{
+		printf("open %s error\n", filename1);
+		return -1;
+	}
+	off = 0;
+	while(off < *ml && write(out1, ori_stream+off, 1)) off++;
+	close(out1);
+#endif
+
+	ret = uncompress(new_stream, &new_length, ori_stream, *ml+1);
+	if(ret != Z_OK)  
+	{  
+		ERROR("uncompress failed (%d) !\n", ret);  
+		return -1;  
+	} 
+#ifdef DEBUG_DUMP
+	char filename2[128] = {0};
+	sprintf(filename2, "stream/%d-%d-%d-%s-origin-uncompress", obj->obj, *ml, obj->start, obj->name_ori[0]?obj->name_ori:"null");
+	int out2 = open(filename2, O_RDWR | O_CREAT);
+	if(out2<0)
+	{
+		printf("open %s error\n", filename2);
+		return -1;
+	}
+	off = 0;
+	while(off < new_length && write(out2, new_stream+off, 1)) off++;
+	close(out2);
+#endif
+
+	//replace the fontname 
+	char fontname_new[MAX_FONTNAME_LONG] = {0};
+	sprintf(fontname_new, "FONT-%d", obj->uid);
+	INFO3("O%d (%s) -> (%s)\n", obj->obj, obj->name_ori, fontname_new);
+	if(obj->CIDFontType0C)
+		replace_string(new_stream, obj->name_ori, fontname_new, &new_length, 1);
+	else
+		replace_string(new_stream, obj->name_ori, fontname_new, &new_length, 99);
+
+#ifdef DEBUG_DUMP
+	char filename3[128] = {0};
+	sprintf(filename3, "stream/%d-%d-%d-%s-new-uncompress", obj->obj, *ml, obj->start, obj->name_ori[0]?obj->name_ori:"null");
+	int out3 = open(filename3, O_RDWR | O_CREAT);
+	if(out3<0)
+	{
+		printf("open %s error\n", filename3);
+		return -1;
+	}
+	off = 0;
+	while(off < new_length && write(out3, new_stream+off, 1)) off++;
+	close(out3);
+#endif
+
+	//compress data to orgin stream buf
+	unsigned long tl = *ml*2;
+	memset(ori_stream, 0, tl);
+	ret = compress(ori_stream, &tl, new_stream, new_length);
+	if(ret != Z_OK)  
+	{  
+		ERROR("compress failed (%d) !\n", ret);  
+		return -1;  
+	}
+	*ml = tl;
+	
+#ifdef DEBUG_DUMP
+	char filename4[128] = {0};
+	sprintf(filename4, "stream/%d-%d-%d-%s-new-compress", obj->obj, *ml, obj->start, obj->name_ori[0]?obj->name_ori:"null");
+	int out4 = open(filename4, O_RDWR | O_CREAT);
+	if(out4<0)
+	{
+		printf("open %s error\n", filename4);
+		return -1;
+	}
+	off = 0;
+	while(off < *ml && write(out4, ori_stream+off, 1)) off++;
+	close(out4);
+#endif
+	
+	free(new_stream);
+	
+	return 0;
 }
 
 int update_obj_length(struct obj_info *objs, int fd_in, int maxobj)
 {
-	//UID
 	int i,j,id = 1;
-	for(i=0;i<maxobj;i++)
+	for(i=0;i<=maxobj;i++)
 	{
-		if((objs+i)->type == 3)
+		if((objs+i)->obj && (objs+i)->type == 3 && (objs+i)->compress_type == 1)
 		{
-			int ml = (objs+i)->end - (objs+i)->start;
-			char *ori_stream = (char *)malloc(ml+1);
-			char *new_stream = (char *)malloc(ml*2+1);
-			if(!ori_stream || !new_stream)
+			unsigned long ml = (objs+i)->end - (objs+i)->start;
+			char *ori_stream = (char *)malloc(ml*2);
+			if(!ori_stream)
 			{
-				printf("malloc failed\n");
+				ERROR("malloc failed %d\n", ml);
 				return -1;
 			}
-			memset(ori_stream, 0, ml+1);
-			memset(new_stream, 0, ml*2+1);
+			memset(ori_stream, 0, ml*2);
 			
 			int off = 0;
 			lseek(fd_in, (objs+i)->start, SEEK_SET);
 			while(off < ml && read(fd_in, ori_stream+off, 1)) off++;
 			
-			uncompress(ori_stream, new_stream);
-			
-			//TODO: replace the font name in new_stream
-			//
-			
-			//TODO open>>memset(ori_stream, 0, ml+1);
-			//update ref length
-			//TODO open>>(objs+(objs+i)->ref[0])->length = compress(new_stream, ori_stream);
-			
-			#if 1
-			char filename[32] = {0};
-			sprintf(filename, "stream/%d-%d-%s", (objs+i)->obj, ml, (objs+i)->name_ori);
-			int out = open(filename, O_RDWR | O_CREAT);
-			if(out<0)
-			{
-				printf("open %s error\n", filename);
-				return -1;
-			}
-			off = 0;
-			while(off < ml && write(out, ori_stream+off, 1)) off++;
+			update_stream(objs+i, ori_stream, &ml);
 
-			close(out);
-			#endif
-			
+			//update ref length
+			(objs+(objs+i)->ref[0])->length = ml;
+			INFO2("change O%d %d\n", (objs+i)->ref[0], (objs+(objs+i)->ref[0])->length);
+
 			free(ori_stream);
-			free(new_stream);
 		}
 	}
 }
 
 int main(int argc, char **argv)
 {
-	int i;
+	int i,j;
 	int maxobj = 0;
 	
 	struct obj_info *objs = (struct obj_info *)malloc(MAX_OBJS * sizeof(struct obj_info));
@@ -315,11 +443,22 @@ int main(int argc, char **argv)
 	
 	maxobj = init_objects(objs);
 	
-	maxobj = update_objects(objs, maxobj);
+	update_objects(objs, maxobj);
 	
 	update_obj_length(objs, fd_in, maxobj);
+
 	
-	return 0;
+	//sort the objects by offset
+	qsort(objs, maxobj+1, sizeof(struct obj_info), mycmp);
+
+	//debug
+	i=0;
+	while((objs+i++)->obj);
+	i--;
+	INFO2("total %d\n", i);
+	for(j=0;j<i;j++)
+		INFO2("O%d T%d (%lld\t%lld) U%d RD%d F%lld\n",(objs+j)->obj, (objs+j)->type, (objs+j)->start, (objs+j)->end, (objs+j)->uid, (objs+j)->refed, (objs+j)->offset);	
+	
 	
 	lseek(fd_in, 0, SEEK_SET);
 	char c;
@@ -330,8 +469,9 @@ int main(int argc, char **argv)
 		char fontname_new[MAX_FONTNAME_LONG] = {0};
 		if(pdf_off == (objs+i)->start)
 		{
-			if((objs+i)->type == 0)
+			if((objs+i)->type == 0 && (objs+i)->nref == 0)
 			{
+				INFO2("O%d %d\n", (objs+i)->obj, (objs+i)->length);
 				sprintf(fontname_new, "%d", (objs+i)->length);
 				write(fd_out, fontname_new, strlen(fontname_new));
 				pdf_off = lseek(fd_in, (objs+i)->end, SEEK_SET);
@@ -341,11 +481,29 @@ int main(int argc, char **argv)
 				sprintf(fontname_new, "FONT-%d", (objs+i)->uid);
 				write(fd_out, fontname_new, strlen(fontname_new));
 				pdf_off = lseek(fd_in, (objs+i)->end, SEEK_SET);
-				INFO0("O%d off %d %llu\n",(objs+i)->i,strlen((objs+i)->name_ori),pdf_off);
+				INFO0("O%d off %d %llu\n",(objs+i)->obj,strlen((objs+i)->name_ori), pdf_off);
 			}
 			else if((objs+i)->type == 3)
 			{
+				unsigned long ml = (objs+i)->end - (objs+i)->start;
+				char *ori_stream = (char *)malloc(ml*2);
+				if(!ori_stream)
+				{
+					ERROR("malloc failed %lu\n", ml);
+					return -1;
+				}
+				memset(ori_stream, 0, ml*2);
 				
+				int off = 0;
+				lseek(fd_in, (objs+i)->start, SEEK_SET);
+				while(off < ml && read(fd_in, ori_stream+off, 1)) off++;
+				
+				update_stream(objs+i, ori_stream, &ml);
+
+				write(fd_out, ori_stream, ml);
+				free(ori_stream);
+				
+				pdf_off = lseek(fd_in, (objs+i)->end, SEEK_SET);
 			}
 			i++;
 		}
