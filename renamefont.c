@@ -303,11 +303,13 @@ int update_stream(struct obj_info *obj, char *ori_stream, unsigned long *ml)
 	if(out1<0)
 	{
 		printf("open %s error\n", filename1);
-		return -1;
 	}
-	off = 0;
-	while(off < *ml && write(out1, ori_stream+off, 1)) off++;
-	close(out1);
+	else
+	{
+		off = 0;
+		while(off < *ml && write(out1, ori_stream+off, 1)) off++;
+		close(out1);
+	}
 #endif
 
 	ret = uncompress(new_stream, &new_length, ori_stream, *ml+1);
@@ -323,21 +325,18 @@ int update_stream(struct obj_info *obj, char *ori_stream, unsigned long *ml)
 	if(out2<0)
 	{
 		printf("open %s error\n", filename2);
-		return -1;
 	}
-	off = 0;
-	while(off < new_length && write(out2, new_stream+off, 1)) off++;
-	close(out2);
+	else
+	{
+		off = 0;
+		while(off < new_length && write(out2, new_stream+off, 1)) off++;
+		close(out2);
+	}
 #endif
 
 	//replace the fontname 
-	char fontname_new[MAX_FONTNAME_LONG] = {0};
-	sprintf(fontname_new, "FONT-%d", obj->uid);
-	INFO3("O%d (%s) -> (%s)\n", obj->obj, obj->name_ori, fontname_new);
-	if(obj->CIDFontType0C)
-		replace_string(new_stream, obj->name_ori, fontname_new, &new_length, 1);
-	else
-		replace_string(new_stream, obj->name_ori, fontname_new, &new_length, 99);
+	INFO3("O%d (%s) -> (%s)\n", obj->obj, obj->name_ori, obj->name_new);
+	replace_string(new_stream, obj->name_ori, obj->name_new, &new_length, 99);
 
 #ifdef DEBUG_DUMP
 	char filename3[128] = {0};
@@ -346,11 +345,13 @@ int update_stream(struct obj_info *obj, char *ori_stream, unsigned long *ml)
 	if(out3<0)
 	{
 		printf("open %s error\n", filename3);
-		return -1;
 	}
-	off = 0;
-	while(off < new_length && write(out3, new_stream+off, 1)) off++;
-	close(out3);
+	else
+	{
+		off = 0;
+		while(off < new_length && write(out3, new_stream+off, 1)) off++;
+		close(out3);
+	}
 #endif
 
 	//compress data to orgin stream buf
@@ -371,16 +372,33 @@ int update_stream(struct obj_info *obj, char *ori_stream, unsigned long *ml)
 	if(out4<0)
 	{
 		printf("open %s error\n", filename4);
-		return -1;
 	}
-	off = 0;
-	while(off < *ml && write(out4, ori_stream+off, 1)) off++;
-	close(out4);
+	else
+	{
+		off = 0;
+		while(off < *ml && write(out4, ori_stream+off, 1)) off++;
+		close(out4);
+	}
 #endif
 	
 	free(new_stream);
 	
 	return 0;
+}
+
+int update_fontname(struct obj_info *objs, int maxobj)
+{
+	int i,j,id = 1;
+	for(i=0;i<=maxobj;i++)
+	{
+		if((objs+i)->obj && (objs+i)->name_ori[0])
+		{
+			char buf[64] = {0};
+			sprintf(buf, "%04d", (objs+i)->uid);
+			memcpy((objs+i)->name_new, (objs+i)->name_ori, strlen((objs+i)->name_ori)-4);
+			memcpy((objs+i)->name_new + strlen((objs+i)->name_ori)-4, buf,4);
+		}
+	}
 }
 
 int update_obj_length(struct obj_info *objs, int fd_in, int maxobj)
@@ -445,9 +463,10 @@ int main(int argc, char **argv)
 	
 	update_objects(objs, maxobj);
 	
+	update_fontname(objs, maxobj);
+	
 	update_obj_length(objs, fd_in, maxobj);
 
-	
 	//sort the objects by offset
 	qsort(objs, maxobj+1, sizeof(struct obj_info), mycmp);
 
@@ -466,20 +485,19 @@ int main(int argc, char **argv)
 	i = 0;
 	while(read(fd_in,&c,1)==1)
 	{
-		char fontname_new[MAX_FONTNAME_LONG] = {0};
 		if(pdf_off == (objs+i)->start)
 		{
 			if((objs+i)->type == 0 && (objs+i)->nref == 0)
 			{
+				char length_string[MAX_FONTNAME_LONG] = {0};
 				INFO2("O%d %d\n", (objs+i)->obj, (objs+i)->length);
-				sprintf(fontname_new, "%d", (objs+i)->length);
-				write(fd_out, fontname_new, strlen(fontname_new));
+				sprintf(length_string, "%d", (objs+i)->length);
+				write(fd_out, length_string, strlen(length_string));
 				pdf_off = lseek(fd_in, (objs+i)->end, SEEK_SET);
 			}
 			else if((objs+i)->type == 1 || (objs+i)->type == 2)
 			{
-				sprintf(fontname_new, "FONT-%d", (objs+i)->uid);
-				write(fd_out, fontname_new, strlen(fontname_new));
+				write(fd_out, (objs+i)->name_new, strlen((objs+i)->name_new));
 				pdf_off = lseek(fd_in, (objs+i)->end, SEEK_SET);
 				INFO0("O%d off %d %llu\n",(objs+i)->obj,strlen((objs+i)->name_ori), pdf_off);
 			}
